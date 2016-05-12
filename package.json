@@ -1,0 +1,24 @@
+{
+  "name": "videoserver-listener",
+  "version": "0.0.1",
+  "description": "Custom listener server for Stirlab video servers",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "nodemon ./app.js",
+    "start:debug": "DEBUG=esl:* nodemon ./app.js"
+  },
+  "author": "Chad Phillips",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "async": "",
+    "body-parser": "",
+    "express": "",
+    "errorhandler": "",
+    "esl": "3.2.0",
+    "morgan": "",
+    "underscore": "",
+    "winston": ""
+  }
+}

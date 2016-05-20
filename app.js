@@ -31,7 +31,7 @@ if (process.env.NODE_ENV !== "production") {
 var level;
 var transports;
 if (process.env.NODE_ENV === "production") {
-  var logDir = config.log_dir || __dirname;
+  var logDir = config.logDir || __dirname;
   level = 'info';
   transports = [
     new (winston.transports.File)({ filename: logDir + '/server.log' }),

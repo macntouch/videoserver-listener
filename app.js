@@ -13,6 +13,8 @@ var esl = require('esl');
 var async = require('async');
 var bodyParser = require('body-parser');
 var config = require('./config');
+var roomManagerConfig = require(config.openhangoutRoot + '/server/config');
+var RoomManager = require(config.openhangoutRoot + '/server/room-manager')(roomManagerConfig);
 
 esl.debug = config.esl_debug;
 
@@ -59,7 +61,7 @@ app.use(function (req, res, next) {
   }
   else {
     logger.warn(util.format('server token validation failed on token %s', token));
-    return res.status(401).send("Unauthorized");
+    return res.status(401).send("Unauthorized, valid server token required");
   }
 });
 
@@ -84,7 +86,7 @@ app.get('/', function (req, res) {
   res.send('Stirlab videoserver listener server, this page does nothing, you must make a valid api call');
 });
 
-var runCommandSeries = function(FS, commands, seriesCallback) {
+var runFreeswitchCommandSeries = function(FS, commands, seriesCallback) {
   var buildCommandFunc = function(command) {
     return function(cb) {
       logger.debug(format("Running command '%s'", command));
@@ -105,6 +107,7 @@ var runCommandSeries = function(FS, commands, seriesCallback) {
   async.series(series, seriesCallback);
 }
 
+// FreeSWITCH routes.
 var buildFreeswitchRoutes = function(FS) {
   app.post('/conference/:conferenceId/commands', function (req, res) {
     var commands = req.body.commands;
@@ -122,7 +125,7 @@ var buildFreeswitchRoutes = function(FS) {
           return successResponse(res, results);
         }
       }
-      runCommandSeries(FS, series, seriesCallback);
+      runFreeswitchCommandSeries(FS, series, seriesCallback);
     }
     else {
       return errorResponse(res, 400, "Bad request, commands array required.");
@@ -130,7 +133,7 @@ var buildFreeswitchRoutes = function(FS) {
   });
 }
 
-// FreeSWITCH.
+// FreeSWITCH connection.
 var host = config.esl_host || 'localhost';
 var port = config.esl_port || 8021;
 var password = config.esl_password || 'Cluecon';
@@ -158,3 +161,64 @@ var options = {
 logger.info(format('Starting HTTPS server on port %d', config.ssl_port));
 https.createServer(options, app).listen(config.ssl_port);
 
+// Openhangout routes.
+var runRoomManagerRequestSeries = function(ids, method, seriesCallback) {
+  var buildRequestFunc = function(id) {
+    return function(cb) {
+      var roomManagerCallback = function(cb, result) {
+        cb(null, result);
+      }
+      logger.debug(format("Executing %s with id %s", method, id));
+      RoomManager[method](id, _.bind(roomManagerCallback, this, cb));
+    }
+  }
+  var series = _.map(ids, buildRequestFunc);
+  async.series(series, seriesCallback);
+}
+
+var roomManagerRequestResult = function(res, err, results) {
+  if (err) {
+    return errorResponse(res, 500, err);
+  }
+  else {
+    return successResponse(res, results);
+  }
+}
+
+app.get('/room-manager/rooms/', function(req, res) {
+  var rooms = RoomManager.getRooms();
+  res.json(rooms.data);
+});
+
+
+app.post('/room-manager/rooms/', function(req, res) {
+  var ids = req.body.ids;
+  if (_.isArray(ids)) {
+    logger.debug(format('Request to create rooms', ids));
+    runRoomManagerRequestSeries(ids, 'createRoom', _.bind(roomManagerRequestResult, this, res));
+  }
+  else {
+    return errorResponse(res, 400, "Bad request, ids array required.");
+  }
+});
+
+app.delete('/room-manager/rooms/', function(req, res) {
+  var ids = req.body.ids;
+  if (_.isArray(ids)) {
+    logger.debug(format('Request to delete rooms', ids));
+    runRoomManagerRequestSeries(ids, 'deleteRoom', _.bind(roomManagerRequestResult, this, res));
+  }
+  else {
+    return errorResponse(res, 400, "Bad request, ids array required.");
+  }
+});
+
+var loadRoomsCallback = function(result) {
+  if (result.success) {
+    logger.info(format('Successfully loaded rooms from room manager'));
+  }
+  else {
+    logger.error('Error loading rooms from room manager', result.status, result.message);
+  }
+}
+RoomManager.updateRooms(loadRoomsCallback);

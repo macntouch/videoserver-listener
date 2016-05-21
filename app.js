@@ -213,6 +213,19 @@ app.delete('/room-manager/rooms/', function(req, res) {
   }
 });
 
+app.post('/room-manager/:roomName/create-token', function(req, res) {
+  var tokenCallback = function(result) {
+    if (result.success) {
+      return res.send(result.data);
+    }
+    else {
+      return res.status(result.status).send(result.message);
+    }
+  }
+  logger.debug('Request to create token:', req.params.roomName, req.body.username, req.body.role);
+  return RoomManager.createToken(req.params.roomName, req.body.username, req.body.role, tokenCallback);
+});
+
 var loadRoomsCallback = function(result) {
   if (result.success) {
     logger.info(format('Successfully loaded rooms from room manager'));

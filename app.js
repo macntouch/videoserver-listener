@@ -187,7 +187,7 @@ var roomManagerRequestResult = function(res, err, results) {
 
 app.get('/room-manager/rooms/', function(req, res) {
   var rooms = RoomManager.getRooms();
-  res.json(rooms.data);
+  res.json(rooms);
 });
 
 
@@ -214,24 +214,24 @@ app.delete('/room-manager/rooms/', function(req, res) {
 });
 
 app.post('/room-manager/:roomName/create-token', function(req, res) {
-  var tokenCallback = function(result) {
-    if (result.success) {
-      return res.send(result.data);
+  var tokenCallback = function(err, result) {
+    if (err) {
+      return res.status(result).send(err);
     }
     else {
-      return res.status(result.status).send(result.message);
+      return res.send(result);
     }
   }
   logger.debug('Request to create token:', req.params.roomName, req.body.username, req.body.role);
   return RoomManager.createToken(req.params.roomName, req.body.username, req.body.role, tokenCallback);
 });
 
-var loadRoomsCallback = function(result) {
-  if (result.success) {
-    logger.info(format('Successfully loaded rooms from room manager'));
+var loadRoomsCallback = function(err, result) {
+  if (err) {
+    logger.error('Error loading rooms from room manager', err, result);
   }
   else {
-    logger.error('Error loading rooms from room manager', result.status, result.message);
+    logger.info(format('Successfully loaded rooms from room manager'));
   }
 }
 RoomManager.updateRooms(loadRoomsCallback);

@@ -213,15 +213,13 @@ app.delete('/room-manager/rooms/', function(req, res) {
   }
 });
 
-// NOTE: This endpoint returns only the token instead of wrapping it in
-// success/error objects, better fit since the client calls it directly.
 app.post('/room-manager/:roomName/create-token', function(req, res) {
   var tokenCallback = function(err, result) {
     if (err) {
-      return res.status(result).send(err);
+      return errorResponse(res, result, err);
     }
     else {
-      return res.send(result);
+      return successResponse(res, result);
     }
   }
   logger.debug('Request to create token:', req.params.roomName, req.body.username, req.body.role);

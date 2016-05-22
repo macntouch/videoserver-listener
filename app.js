@@ -66,11 +66,11 @@ app.use(function (req, res, next) {
 });
 
 var successResponse = function(res, data) {
-  var data = {
+  var json = {
     success: true,
     data: data,
   };
-  return res.json(data);
+  return res.json(json);
 }
 
 var errorResponse = function(res, status, message) {
@@ -187,7 +187,7 @@ var roomManagerRequestResult = function(res, err, results) {
 
 app.get('/room-manager/rooms/', function(req, res) {
   var rooms = RoomManager.getRooms();
-  res.json(rooms);
+  return successResponse(res, rooms);
 });
 
 
@@ -213,6 +213,8 @@ app.delete('/room-manager/rooms/', function(req, res) {
   }
 });
 
+// NOTE: This endpoint returns only the token instead of wrapping it in
+// success/error objects, better fit since the client calls it directly.
 app.post('/room-manager/:roomName/create-token', function(req, res) {
   var tokenCallback = function(err, result) {
     if (err) {

@@ -185,11 +185,14 @@ var roomManagerRequestResult = function(res, err, results) {
   }
 }
 
+app.get('/monitor/', function(req, res) {
+  return successResponse(res, 'up');
+});
+
 app.get('/room-manager/rooms/', function(req, res) {
   var rooms = RoomManager.getRooms();
   return successResponse(res, rooms);
 });
-
 
 app.post('/room-manager/rooms/', function(req, res) {
   var ids = req.body.ids;

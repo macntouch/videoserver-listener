@@ -186,6 +186,7 @@ var roomManagerRequestResult = function(res, err, results) {
 }
 
 app.get('/monitor/', function(req, res) {
+  logger.debug('Got monitor request');
   return successResponse(res, 'up');
 });
 

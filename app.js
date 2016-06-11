@@ -94,11 +94,16 @@ var runFreeswitchCommandSeries = function(FS, commands, seriesCallback) {
       .then(function(res) {
         logger.debug(format("Command '%s' result headers: %s", command, JSON.stringify(res.headers)));
         logger.debug(format("Command '%s' result body: %s", command, res.body));
-        if (res.body.match(/-ERR/)) {
-          cb(res.body, null);
+        cb(null, res.body);
+      })
+      .catch(function(error) {
+        if (_.isObject(error.res)) {
+          logger.error(format("Command '%s' error: %s", command, error.res.body));
+          cb(error.res.body, null);
         }
         else {
-          cb(null, res.body);
+          logger.error(format("Command '%s' error: %s", command, JSON.stringify(error)));
+          cb(error, null);
         }
       });
     }

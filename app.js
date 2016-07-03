@@ -114,6 +114,23 @@ var runFreeswitchCommandSeries = function(FS, commands, seriesCallback) {
 
 // FreeSWITCH routes.
 var buildFreeswitchRoutes = function(FS) {
+  app.post('/commands', function (req, res) {
+    var commands = req.body.commands;
+    if (_.isArray(commands)) {
+      var seriesCallback = function(err, results) {
+        if (err) {
+          return errorResponse(res, 500, err);
+        }
+        else {
+          return successResponse(res, results);
+        }
+      }
+      runFreeswitchCommandSeries(FS, commands, seriesCallback);
+    }
+    else {
+      return errorResponse(res, 400, "Bad request, commands array required.");
+    }
+  });
   app.post('/conference/:conferenceId/commands', function (req, res) {
     var commands = req.body.commands;
     if (_.isArray(commands)) {

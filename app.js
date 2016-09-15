@@ -70,6 +70,7 @@ var successResponse = function(res, data) {
     success: true,
     data: data,
   };
+  logger.debug('success response', json);
   return res.json(json);
 }
 
@@ -79,6 +80,7 @@ var errorResponse = function(res, status, message) {
     status: status,
     message: message,
   };
+  logger.error('error response', json);
   return res.status(status).json(data);
 }
 

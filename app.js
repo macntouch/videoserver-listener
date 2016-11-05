@@ -75,13 +75,13 @@ var successResponse = function(res, data) {
 }
 
 var errorResponse = function(res, status, message) {
-  var data = {
+  var json = {
     success: false,
     status: status,
     message: message,
   };
   logger.error('error response', json);
-  return res.status(status).json(data);
+  return res.status(status).json(json);
 }
 
 app.get('/', function (req, res) {

@@ -9,14 +9,12 @@ var https = require('https');
 var morgan = require('morgan');
 var winston = require("winston");
 var fs = require('fs');
-var esl = require('esl');
 var async = require('async');
 var bodyParser = require('body-parser');
 var config = require('./config');
 var roomManagerConfig = require(config.openhangoutRoot + '/server/config');
 var RoomManager = require(config.openhangoutRoot + '/server/room-manager')(roomManagerConfig);
-
-esl.debug = config.esl_debug;
+var freeswitchUtil = require('./freeswitch-util');
 
 var SERVER_TOKEN = config.server_token || 'ff50a71e-956d-9feb-f1cd-fe4b9f2d7470';
 
@@ -50,6 +48,8 @@ var logger = new winston.Logger({
   level: level,
   transports: transports,
 });
+
+var fsUtil = freeswitchUtil(logger);
 
 app.use(bodyParser.json());
 
@@ -88,32 +88,6 @@ app.get('/', function (req, res) {
   res.send('Stirlab videoserver listener server, this page does nothing, you must make a valid api call');
 });
 
-var runFreeswitchCommandSeries = function(FS, commands, seriesCallback) {
-  var buildCommandFunc = function(command) {
-    return function(cb) {
-      logger.debug(format("Running command '%s'", command));
-      FS.api(command)
-      .then(function(res) {
-        logger.debug(format("Command '%s' result headers: %s", command, JSON.stringify(res.headers)));
-        logger.debug(format("Command '%s' result body: %s", command, res.body));
-        cb(null, res.body);
-      })
-      .catch(function(error) {
-        if (_.isObject(error.res)) {
-          logger.error(format("Command '%s' error: %s", command, error.res.body));
-          cb(error.res.body, null);
-        }
-        else {
-          logger.error(format("Command '%s' error: %s", command, JSON.stringify(error)));
-          cb(error, null);
-        }
-      });
-    }
-  }
-  var series = _.map(commands, buildCommandFunc);
-  async.series(series, seriesCallback);
-}
-
 // FreeSWITCH routes.
 var buildFreeswitchRoutes = function(FS) {
   app.post('/commands', function (req, res) {
@@ -127,7 +101,7 @@ var buildFreeswitchRoutes = function(FS) {
           return successResponse(res, results);
         }
       }
-      runFreeswitchCommandSeries(FS, commands, seriesCallback);
+      fsUtil.runFreeswitchCommandSeries(FS, commands, seriesCallback);
     }
     else {
       return errorResponse(res, 400, "Bad request, commands array required.");
@@ -149,7 +123,7 @@ var buildFreeswitchRoutes = function(FS) {
           return successResponse(res, results);
         }
       }
-      runFreeswitchCommandSeries(FS, series, seriesCallback);
+      fsUtil.runFreeswitchCommandSeries(FS, series, seriesCallback);
     }
     else {
       return errorResponse(res, 400, "Bad request, commands array required.");
@@ -157,26 +131,10 @@ var buildFreeswitchRoutes = function(FS) {
   });
 }
 
-// FreeSWITCH connection.
-var host = config.esl_host || 'localhost';
-var port = config.esl_port || 8021;
-var password = config.esl_password || 'Cluecon';
-var options = {
-  password: password,
-};
-var handler = function() {
-  logger.info(format('connection to FreeSWITCH server %s:%d successful', host, port));
-  this.api('status')
-  .then(function(res){
-    logger.debug(res.body);
-  });
-  buildFreeswitchRoutes(this);
+var connectCallback = function(FS) {
+  buildFreeswitchRoutes(FS);
 }
-var report = function(err) {
-  logger.error(format('Error connecting to FreeSWITCH server %s:%d, %s', host, port, err));
-}
-logger.info(format('connecting to FreeSWITCH server %s:%d, password %s', host, port, password));
-esl.client(options, handler, report).connect(port, host);
+fsUtil.connect(config, connectCallback);
 
 var options = {
   key: fs.readFileSync(config.ssl_key).toString(),

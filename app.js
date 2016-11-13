@@ -15,6 +15,7 @@ var config = require('./config');
 var roomManagerConfig = require(config.openhangoutRoot + '/server/config');
 var RoomManager = require(config.openhangoutRoot + '/server/room-manager')(roomManagerConfig);
 var freeswitchUtil = require('./freeswitch-util');
+var freeswitchLayoutManager = require('./freeswitch-layout-manager');
 
 var SERVER_TOKEN = config.server_token || 'ff50a71e-956d-9feb-f1cd-fe4b9f2d7470';
 
@@ -49,7 +50,7 @@ var logger = new winston.Logger({
   transports: transports,
 });
 
-var fsUtil = freeswitchUtil(logger);
+var fsUtil = new freeswitchUtil(logger);
 
 app.use(bodyParser.json());
 
@@ -101,7 +102,7 @@ var buildFreeswitchRoutes = function(FS) {
           return successResponse(res, results);
         }
       }
-      fsUtil.runFreeswitchCommandSeries(FS, commands, seriesCallback);
+      fsUtil.runFreeswitchCommandSeries(commands, seriesCallback, FS);
     }
     else {
       return errorResponse(res, 400, "Bad request, commands array required.");
@@ -123,7 +124,7 @@ var buildFreeswitchRoutes = function(FS) {
           return successResponse(res, results);
         }
       }
-      fsUtil.runFreeswitchCommandSeries(FS, series, seriesCallback);
+      fsUtil.runFreeswitchCommandSeries(series, seriesCallback, FS);
     }
     else {
       return errorResponse(res, 400, "Bad request, commands array required.");
@@ -133,6 +134,9 @@ var buildFreeswitchRoutes = function(FS) {
 
 var connectCallback = function(FS) {
   buildFreeswitchRoutes(FS);
+  var fsLayoutManager = new freeswitchLayoutManager(FS, config, logger);
+  fsLayoutManager.conferenceAddEventListener();
+  fsLayoutManager.monitorAll();
 }
 fsUtil.connect(config, connectCallback);
 

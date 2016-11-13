@@ -32,26 +32,30 @@ module.exports = function(logger) {
     esl.client(options, handler, report).connect(port, host);
   }
 
+  var runFreeswitchCommand = function(FS, command, callback) {
+    logger.debug(format("Running command '%s'", command));
+    FS.api(command)
+    .then(function(res) {
+      logger.debug(format("Command '%s' result headers: %s", command, JSON.stringify(res.headers)));
+      logger.debug(format("Command '%s' result body: %s", command, res.body));
+      callback(null, res.body);
+    })
+    .catch(function(error) {
+      if (_.isObject(error.res)) {
+        logger.error(format("Command '%s' error: %s", command, error.res.body));
+        callback(error.res.body, null);
+      }
+      else {
+        logger.error(format("Command '%s' error: %s", command, JSON.stringify(error)));
+        callback(error, null);
+      }
+    });
+  }
+
   var runFreeswitchCommandSeries = function(FS, commands, seriesCallback) {
     var buildCommandFunc = function(command) {
-      return function(cb) {
-        logger.debug(format("Running command '%s'", command));
-        FS.api(command)
-        .then(function(res) {
-          logger.debug(format("Command '%s' result headers: %s", command, JSON.stringify(res.headers)));
-          logger.debug(format("Command '%s' result body: %s", command, res.body));
-          cb(null, res.body);
-        })
-        .catch(function(error) {
-          if (_.isObject(error.res)) {
-            logger.error(format("Command '%s' error: %s", command, error.res.body));
-            cb(error.res.body, null);
-          }
-          else {
-            logger.error(format("Command '%s' error: %s", command, JSON.stringify(error)));
-            cb(error, null);
-          }
-        });
+      return function(callback) {
+        runFreeswitchCommand(FS, command, callback);
       }
     }
     var series = _.map(commands, buildCommandFunc);

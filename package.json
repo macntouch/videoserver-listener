@@ -19,6 +19,7 @@
     "esl": "3.2.0",
     "morgan": "",
     "underscore": "",
-    "winston": ""
+    "winston": "",
+    "xml2js": ""
   }
 }

@@ -134,9 +134,11 @@ var buildFreeswitchRoutes = function(FS) {
 
 var connectCallback = function(FS) {
   buildFreeswitchRoutes(FS);
-  var fsLayoutManager = new freeswitchLayoutManager(FS, config, logger);
-  fsLayoutManager.conferenceAddEventListener();
-  fsLayoutManager.monitorAll();
+  var layoutInitCallback = function() {
+    fsLayoutManager.conferenceAddEventListener();
+    fsLayoutManager.monitorAll();
+  }
+  var fsLayoutManager = new freeswitchLayoutManager(FS, config, layoutInitCallback, logger);
 }
 fsUtil.connect(config, connectCallback);
 

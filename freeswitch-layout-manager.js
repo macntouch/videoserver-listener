@@ -129,13 +129,16 @@ FreeswitchLayoutManager.prototype.findLayoutByUserCount = function(conference) {
       return slots >= users.length;
     }, this);
     var layout = _.first(candidates);
+    layout && this.logger.debug(format("selected layout % from group %s for %d users", layout.id, layoutGroup.id, users.length));
     return layout;
   }
 }
 
 FreeswitchLayoutManager.prototype.rebuildSlots = function(slots, layout) {
+  this.logger.debug("clearing slots");
   var newSlots = [];
   if (layout) {
+    this.logger.debug(format("rebuilding slots for layout %s", layout.id));
     var slotCount = layout.get('slots');
     for (var i = 1; i <= slotCount; i++) {
       newSlots.push({id: i});
@@ -156,6 +159,7 @@ FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
     }, this);
     this.findEmptySlot(slots, user, true);
     conference.set('activeLayout', layout, {silent: true});
+    this.logger.debug(format("upgraded to layout %s for %d users", layout.id, users.length));
     var commands = [];
     commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
     commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
@@ -185,6 +189,7 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
       this.findEmptySlot(slots, user, true);
       commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
     }, this);
+    this.logger.debug(format("set layout %s for %d users", layout.id, users.length));
   }
   this.util.runFreeswitchCommandSeries(commands, null, this.FS);
 }
@@ -204,6 +209,7 @@ FreeswitchLayoutManager.prototype.reservationChanged = function(user, reservatio
 FreeswitchLayoutManager.prototype.memberIdChanged = function(user, memberId) {
   var prevMemberId = user.previous('memberId');
   if (prevMemberId) {
+    this.logger.info(format("user %s changed member id from %d to %d", user.get('callerName'), prevMemberId, memberId));
     var conference = this.getConference(user.conferenceId);
     if (conference) {
       var command = this.conferenceCommand(conference, format('kick %s', prevMemberId));
@@ -214,11 +220,16 @@ FreeswitchLayoutManager.prototype.memberIdChanged = function(user, memberId) {
 }
 
 FreeswitchLayoutManager.prototype.reSlotExistingUser = function(conference, model) {
+  var users = conference.get('users');
   var slots = conference.get('slots');
   var existingSlot = slots.findWhere({callerId: model.id});
   if (existingSlot) {
-    user.set('memberId', model.memberId);
-    return true;
+    var user = users.get(model.id);
+    if (user) {
+      this.logger.info(format("re-slotting existing user %s in slot %d", user.get('callerName'), existingSlot.id));
+      user.set('memberId', model.memberId);
+      return true;
+    }
   }
   return false;
 }
@@ -227,6 +238,7 @@ FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) 
   silent = _.isUndefined(silent) ? false : silent;
   var slot = slots.findWhere({callerId: null});
   if (slot) {
+    this.logger.debug(format("found empty slot %d for user %s", slot.id, user.get('callerName')));
     slot.set('callerId', user.id, {silent: silent});
     user.set('reservationId', slot.id, {silent: silent});
     return true;
@@ -235,6 +247,7 @@ FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) 
 }
 
 FreeswitchLayoutManager.prototype.userJoined = function(user) {
+  this.logger.debug(format("user %s joined", user.get('callerName')));
   var conference = this.getConference(user.conferenceId);
   if (conference) {
     var slots = conference.get('slots');
@@ -245,6 +258,7 @@ FreeswitchLayoutManager.prototype.userJoined = function(user) {
 }
 
 FreeswitchLayoutManager.prototype.userLeft = function(user) {
+  this.logger.debug(format("user %s left", user.get('callerName')));
   var conference = this.getConference(user.conferenceId);
   if (conference) {
     var users = conference.get('users');
@@ -254,6 +268,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
       var prevLayout = layout.id;
       var lowThreshold = layout.get('lowThreshold');
       if (!lowThreshold || (users.length < lowThreshold)) {
+        this.logger.debug(format("triggering new layout with low theshold %s", lowThreshold));
         this.newLayout(conference);
       }
       var layout = conference.get('activeLayout');
@@ -261,7 +276,10 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
         var reservationId = user.get('reservationId');
         if (reservationId) {
           var slot = slots.get(reservationId);
-          slot && slot.set('callerId', null);
+          if (slot) {
+            this.logger.debug(format("removed user %s from slot %d", user.get('callerName'), slot.id));
+            slot.set('callerId', null);
+          }
         }
       }
     }
@@ -269,6 +287,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
 }
 
 FreeswitchLayoutManager.prototype.getConferenceStatus = function(conferenceId, callback) {
+  this.logger.info(format("retrieving member list for conference %s", conferenceId));
   var statusCallback = function(err, result) {
     callback(err, result);
   }
@@ -368,6 +387,7 @@ FreeswitchLayoutManager.prototype.monitorConference = function(conferenceId, act
       for (var key in models) {
         users.add(models[key], {silent: true});
       }
+      this.logger.info(format("populated conference %s with users %s", conferenceId, JSON.stringify(users.toJSON())));
       populated();
     };
     this.getConferenceMemberData(conference.id, callback.bind(this));
@@ -393,7 +413,7 @@ FreeswitchLayoutManager.prototype.monitorAll = function(layoutGroup) {
         for (var num in lines) {
           var matches = lines[num].match(/^Conference ([0-9a-zA-Z_-]+)/);
           if (matches && matches[1]) {
-            this.logger.info(format("Monitoring conference: %s", + matches[1]));
+            this.logger.info(format("Found conference: %s", matches[1]));
             this.monitorConference(matches[1], this.autoMonitor, true);
           }
         }
@@ -409,6 +429,7 @@ FreeswitchLayoutManager.prototype.monitorAll = function(layoutGroup) {
 }
 
 FreeswitchLayoutManager.prototype.unmonitorAll = function() {
+  this.logger.info("stopping monitoring on all conferences");
   this.conferences.each(function(conference) {
     this.unmonitorConference(conference.id);
   }, this);
@@ -432,7 +453,7 @@ FreeswitchLayoutManager.prototype.isPositiveInt = function(id) {
 }
 
 FreeswitchLayoutManager.prototype.parseConferenceLayout = function(layoutName) {
-  this.logger.debug("searching for conference layout %s", layoutName);
+  this.logger.debug(format("searching for conference layout %s", layoutName));
   var layouts = this.configXml.configuration['layout-settings'][0].layouts[0].layout;
   var findLayout = function() {
     for (var key in layouts) {
@@ -532,6 +553,7 @@ FreeswitchLayoutManager.prototype.parseConferenceGroup = function(group) {
 }
 
 FreeswitchLayoutManager.prototype.parseConferenceGroups = function() {
+  this.logger.info("parsing conference groups");
   var groups = this.configXml.configuration['layout-settings'][0].groups;
   for (var key in groups) {
     var group = groups[key].group[0];
@@ -540,6 +562,7 @@ FreeswitchLayoutManager.prototype.parseConferenceGroups = function() {
 }
 
 FreeswitchLayoutManager.prototype.init = function(callback) {
+  this.logger.info("initializing");
   var parseConfigCallback = function() {
     this.conferenceAddEventListener();
     callback && callback();

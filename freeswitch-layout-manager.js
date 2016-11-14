@@ -1,4 +1,5 @@
 var _ = require('underscore');
+var Backbone = require('backbone');
 var fs = require('fs');
 var util = require('util');
 var format = util.format;
@@ -11,9 +12,183 @@ var FreeswitchLayoutManager = function(FS, config, callback, logger) {
   this.config = config;
   this.logger = logger;
   this.util = new freeswitchUtil(this.logger);
-  this.conferenceMonitors = {};
+  this.autoMonitor = false;
+  this.makeCollections();
   this.configXml = null;
-  this.parseConferenceLayoutConfig(callback);
+  this.activeLayouts= null;
+  this.init(callback);
+}
+
+FreeswitchLayoutManager.prototype.makeCollections = function() {
+  var self = this;
+  var layoutModel = Backbone.Model.extend({});
+  var layoutCollection = Backbone.Collection.extend({
+    model: layoutModel,
+    comparator: 'slots',
+  });
+  var layoutGroupModel = Backbone.Model.extend({
+    initialize: function(options) {
+      var layouts = new layoutCollection(null, this);
+      this.set("layouts", layouts);
+    },
+  });
+  this.layoutGroups = new (Backbone.Collection.extend({
+    model: layoutGroupModel,
+  }))();
+  var userModel = Backbone.Model.extend({
+    defaults: {
+      reservationId: null,
+    },
+    initialize: function(options) {
+      this.conferenceId = this.collection.conferenceId;
+      this.on('change:reservationId', self.reservationChanged, self);
+    },
+  });
+  var userCollection = Backbone.Collection.extend({
+    model: userModel,
+    initialize: function(models, options) {
+      this.conferenceId = options.conferenceId;
+    },
+  });
+  var reservationModel = Backbone.Model.extend({
+    defaults: {
+      memberId: null,
+      floor: false,
+    },
+    initialize: function(options) {
+      this.conferenceId = this.collection.conferenceId;
+    },
+  });
+  var reservationCollection = Backbone.Collection.extend({
+    model: reservationModel,
+    initialize: function(models, options) {
+      this.conferenceId = options.conferenceId;
+    },
+  });
+  var conferenceModel = Backbone.Model.extend({
+    defaults: {
+      activeLayout: null,
+    },
+    initialize: function(options) {
+      var users = new userCollection(null, {conferenceId: this.id}, this);
+      var slots = new reservationCollection(null, {conferenceId: this.id}, this);
+      this.listenTo(users, 'add', self.userJoined.bind(self));
+      this.listenTo(users, 'remove', self.userLeft.bind(self));
+      this.on('change:activeLayout', self.setLayout, self);
+      this.set("users", users);
+      this.set("slots", slots);
+    },
+  });
+  this.conferences = new (Backbone.Collection.extend({
+    model: conferenceModel,
+  }))();
+}
+
+FreeswitchLayoutManager.prototype.setLayoutGroup = function(groupName) {
+  var group = this.layoutGroups.get(groupName);
+  if (group) {
+    this.logger.info(format("activating layout group %s", groupName));
+    this.activeLayouts = group.get('layouts');
+  }
+  else {
+    this.logger.error(format("layout group %s does not exist", groupName));
+  }
+}
+
+FreeswitchLayoutManager.prototype.findLayoutByUserCount = function(conference) {
+  var users = conference.get('users');
+  var candidates = this.activeLayouts.filter(function(layout) {
+    var slots = layout.get('slots');
+    return slots >= users.length;
+  }, this);
+  var layout = _.first(candidates);
+  return layout;
+}
+
+FreeswitchLayoutManager.prototype.newLayout = function(conference) {
+  var layout = this.findLayoutByUserCount(conference);
+  conference.set('activeLayout', layout);
+}
+
+FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
+  var users = conference.get('users');
+  var slots = conference.get('slots');
+  var slotCount = layout.get('slots');
+  var newSlots = [];
+  for (var i = 1; i <= slotCount; i++) {
+    newSlots.push({id: i});
+  }
+  slots.reset(newSlots);
+  // Wasteful to send individual commands with this many operations, so lock
+  // regular changes.
+  users.each(function(user) {
+    user.set('reservationId', null, {silent: true});
+  });
+  var commands = [
+    format('conference %s vid-res-id all clear', conference.id),
+    format('conference %s vid-layout %s', conference.id, layout.id),
+  ];
+  users.each(function(user) {
+    this.findEmptySlot(slots, user, true);
+    commands.push(format('conference %s vid-res-id %s %s', conference.id, user.id, user.get('reservationId')));
+  }, this);
+  this.util.runFreeswitchCommandSeries(commands, null, this.FS);
+}
+
+FreeswitchLayoutManager.prototype.manageSlot = function(user, reservationId) {
+  var commandString = 'conference %s vid-res-id %s %s';
+  if (!reservationId) {
+    commandString += ' clear';
+  }
+  var command = format(commandString, user.conferenceId, user.id, reservationId);
+  this.util.runFreeswitchCommand(command, null, this.FS);
+}
+
+FreeswitchLayoutManager.prototype.reservationChanged = function(user, reservationId) {
+  this.manageSlot(user, reservationId);
+}
+
+FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) {
+  silent = _.isUndefined(silent) ? false : silent;
+  var slot = slots.findWhere({memberId: null});
+  if (slot) {
+    slot.set('memberId', user.id, {silent: silent});
+    user.set('reservationId', slot.id, {silent: silent});
+    return true;
+  }
+  return false;
+}
+
+FreeswitchLayoutManager.prototype.userJoined = function(user) {
+  var conference = this.conferences.get(user.conferenceId);
+  if (conference) {
+    var slots = conference.get('slots');
+    if (!this.findEmptySlot(slots, user)) {
+      this.newLayout(conference);
+    }
+  }
+}
+
+FreeswitchLayoutManager.prototype.userLeft = function(user) {
+  var conference = this.conferences.get(user.conferenceId);
+  if (conference) {
+    var users = conference.get('users');
+    var slots = conference.get('slots');
+    var layout = conference.get('activeLayout');
+    var prevLayout = layout.id;
+    var lowThreshold = layout.get('lowThreshold');
+    if (!lowThreshold || (users.length < lowThreshold)) {
+      this.newLayout(conference);
+    }
+    var layout = conference.get('activeLayout');
+    if (layout.id == prevLayout) {
+      var reservationId = user.get('reservationId');
+      if (reservationId) {
+        var slot = slots.get(reservationId);
+        slot && slot.set('memberId', null);
+      }
+    }
+  }
 }
 
 FreeswitchLayoutManager.prototype.getConferenceStatus = function(conferenceId, callback) {
@@ -31,8 +206,8 @@ FreeswitchLayoutManager.prototype.getConferenceIds = function(conferenceId, call
       var lines = result.split("\n");
       for (var num in lines) {
         var fields = lines[num].split(";");
-        var callerId = fields[4];
-        callerId && ids.push(callerId);
+        var memberId = fields[0];
+        memberId && ids.push(memberId);
       }
     }
     callback(ids);
@@ -43,24 +218,35 @@ FreeswitchLayoutManager.prototype.getConferenceIds = function(conferenceId, call
 FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
   var action = msg.body['Action'];
   var conferenceId = msg.body['Conference-Name'];
-  var callerId = msg.body['Caller-Caller-ID-Number'];
+  var memberId = msg.body['Member-ID'];
   this.logger.debug(format("Got action %s on conference %s", action, conferenceId));
-  if (this.conferenceMonitors[conferenceId]) {
+  var conference;
+  switch (action) {
+    case 'conference-create':
+      this.logger.debug(format("conference %s created", conferenceId));
+      if (this.autoMonitor) {
+        this.monitorConference(conferenceId);
+      }
+      break;
+    case 'conference-destroy':
+      this.logger.debug(format("conference %s destroyed", conferenceId));
+      this.unmonitorConference(conferenceId);
+      break;
+  }
+  conference = conference ? conference : this.conferences.get(conferenceId);
+  if (conference) {
+    var users = conference.get('users');
     switch (action) {
-      case 'conference-create':
-        this.logger.debug(format("conference %s created", conferenceId));
-        break;
-      case 'conference-destroy':
-        this.logger.debug(format("conference %s destroyed", conferenceId));
-        break;
       case 'add-member':
-        this.logger.debug(format("User %s joined conference %s", callerId, conferenceId));
+        this.logger.debug(format("Member %s joined conference %s", memberId, conferenceId));
+        users.add({id: memberId});
         break;
       case 'del-member':
-        this.logger.debug(format("User %s left conference %s", callerId, conferenceId));
+        this.logger.debug(format("Member %s left conference %s", memberId, conferenceId));
+        users.remove(memberId);
         break;
       case 'floor-change':
-        this.logger.debug(format("User %s took floor in conference %s", callerId, conferenceId));
+        this.logger.debug(format("Member %s took floor in conference %s", memberId, conferenceId));
         break;
     }
   }
@@ -78,20 +264,28 @@ FreeswitchLayoutManager.prototype.conferenceAddEventListener = function(callback
 };
 
 FreeswitchLayoutManager.prototype.monitorConference = function(conferenceId) {
-  this.logger.info(format("starting monitoring for conference %s", conferenceId));
-  var callback = function(ids) {
-    console.log(ids);
-  };
-  this.conferenceMonitors[conferenceId] = true;
-  this.getConferenceIds(conferenceId, callback);
+  var conference = this.conferences.get(conferenceId);
+  if (!conference) {
+    this.logger.info(format("starting monitoring for conference %s", conferenceId));
+    var callback = function(ids) {
+      var conference = this.conferences.add({id: conferenceId});
+      var users = conference.get('users');
+      for (var id in ids) {
+        users.add({id: ids[id]}, {silent: true});
+      }
+      this.newLayout(conference);
+    };
+    this.getConferenceIds(conferenceId, callback.bind(this));
+  }
 }
 
 FreeswitchLayoutManager.prototype.unmonitorConference = function(conferenceId) {
   this.logger.info(format("stopping monitoring for conference %s", conferenceId));
-  delete this.conferenceMonitors[conferenceId];
+  this.conferences.remove(conferenceId);
 }
 
 FreeswitchLayoutManager.prototype.monitorAll = function() {
+  this.autoMonitor = true;
   var conferenceListCallback = function(err, result) {
     if (!err) {
       var lines = result.split("\n");
@@ -108,9 +302,10 @@ FreeswitchLayoutManager.prototype.monitorAll = function() {
 }
 
 FreeswitchLayoutManager.prototype.unmonitorAll = function() {
-  for (var conferenceId in this.conferenceMonitors) {
-    this.unmonitorConference(conferenceId);
-  }
+  this.conferences.each(function(conference) {
+    this.unmonitorConference(conference.id);
+  }, this);
+  this.autoMonitor = false;
 }
 
 FreeswitchLayoutManager.prototype.isPositiveInt = function(id) {
@@ -145,6 +340,7 @@ FreeswitchLayoutManager.prototype.parseConferenceLayout = function(layoutName) {
     count = 0;
     usedIds = [];
     var layoutData = {
+      id: layout.$.name,
       hasFloor: false,
       slots: 0,
       lowThreshold: null,
@@ -215,11 +411,14 @@ FreeswitchLayoutManager.prototype.parseConferenceGroup = function(group) {
   this.logger.debug("examining conference layout group %s", group.$.name);
   if (group.$.managed_reservations == 'true') {
     this.logger.info("conference layouts group %s is managed", group.$.name);
+    var layoutGroup = this.layoutGroups.add({id: group.$.name});
+    var layouts = layoutGroup.get('layouts');
     for (var key in group.layout) {
       var layoutName = group.layout[key];
       var layoutData = this.parseConferenceLayout(layoutName);
       if (layoutData) {
         this.logger.info("adding conference layout %s to group %s, slots %d, low threshold %s, floor %s", layoutName, group.$.name, layoutData.slots, layoutData.lowThreshold, layoutData.hasFloor);
+        layouts.add(layoutData);
       }
     }
   }
@@ -231,6 +430,14 @@ FreeswitchLayoutManager.prototype.parseConferenceGroups = function() {
     var group = groups[key].group[0];
     this.parseConferenceGroup(group);
   }
+}
+
+FreeswitchLayoutManager.prototype.init = function(callback) {
+  var parseConfigCallback = function() {
+    this.conferenceAddEventListener();
+    callback && callback();
+  }
+  this.parseConferenceLayoutConfig(parseConfigCallback.bind(this));
 }
 
 FreeswitchLayoutManager.prototype.parseConferenceLayoutConfig = function(callback) {

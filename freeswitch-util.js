@@ -39,6 +39,7 @@ FreeswitchUtil.prototype.connect = function(config, callback) {
 }
 
 FreeswitchUtil.prototype.runFreeswitchCommand = function(command, callback, FS) {
+  callback = callback ? callback : function() {};
   FS = FS ? FS : this.FS;
   this.logger.debug(format("Running command '%s'", command));
   FS.api(command)
@@ -60,6 +61,7 @@ FreeswitchUtil.prototype.runFreeswitchCommand = function(command, callback, FS) 
 }
 
 FreeswitchUtil.prototype.runFreeswitchCommandSeries = function(commands, seriesCallback, FS) {
+  seriesCallback = seriesCallback ? seriesCallback : function() {};
   FS = FS ? FS : this.FS;
   var buildCommandFunc = function(command) {
     return function(callback) {

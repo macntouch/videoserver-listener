@@ -135,8 +135,7 @@ var buildFreeswitchRoutes = function(FS) {
 var connectCallback = function(FS) {
   buildFreeswitchRoutes(FS);
   var layoutInitCallback = function() {
-    fsLayoutManager.setLayoutGroup('circleanywhere');
-    fsLayoutManager.monitorAll();
+    fsLayoutManager.monitorAll('circleanywhere');
   }
   var fsLayoutManager = new freeswitchLayoutManager(FS, config, layoutInitCallback, logger);
 }

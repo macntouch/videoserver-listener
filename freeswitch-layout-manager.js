@@ -36,11 +36,14 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
   }))();
   var userModel = Backbone.Model.extend({
     defaults: {
+      memberId: null,
       reservationId: null,
+      callerName: null,
     },
     initialize: function(options) {
       this.conferenceId = this.collection.conferenceId;
       this.on('change:reservationId', self.reservationChanged, self);
+      this.on('change:memberId', self.memberIdChanged, self);
     },
   });
   var userCollection = Backbone.Collection.extend({
@@ -51,7 +54,7 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
   });
   var reservationModel = Backbone.Model.extend({
     defaults: {
-      memberId: null,
+      callerId: null,
       floor: false,
     },
     initialize: function(options) {
@@ -100,7 +103,7 @@ FreeswitchLayoutManager.prototype.resIdCommand = function(conference, user, rese
   if (!reservationId) {
     commandString += ' clear';
   }
-  var command = this.conferenceCommand(conference, format(commandString, user.id, reservationId));
+  var command = this.conferenceCommand(conference, format(commandString, user.get('memberId'), reservationId));
   return command;
 }
 
@@ -130,6 +133,36 @@ FreeswitchLayoutManager.prototype.findLayoutByUserCount = function(conference) {
   }
 }
 
+FreeswitchLayoutManager.prototype.rebuildSlots = function(slots, layout) {
+  var newSlots = [];
+  if (layout) {
+    var slotCount = layout.get('slots');
+    for (var i = 1; i <= slotCount; i++) {
+      newSlots.push({id: i});
+    }
+  }
+  slots.reset(newSlots);
+}
+
+FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
+  var layout = this.findLayoutByUserCount(conference);
+  if (layout) {
+    var users = conference.get('users');
+    var slots = conference.get('slots');
+    this.rebuildSlots(slots, layout);
+    slots.each(function(slot) {
+      var reslotUser = users.findWhere({reservationId: slot.id});
+      reslotUser && slot.set('callerId', reslotUser.id, {silent: true});
+    }, this);
+    this.findEmptySlot(slots, user, true);
+    conference.set('activeLayout', layout, {silent: true});
+    var commands = [];
+    commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
+    commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
+    this.util.runFreeswitchCommandSeries(commands, null, this.FS);
+  }
+}
+
 FreeswitchLayoutManager.prototype.newLayout = function(conference) {
   var layout = this.findLayoutByUserCount(conference);
   layout && conference.set('activeLayout', layout);
@@ -143,14 +176,7 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
   users.each(function(user) {
     user.set('reservationId', null, {silent: true});
   });
-  var newSlots = [];
-  if (layout) {
-    var slotCount = layout.get('slots');
-    for (var i = 1; i <= slotCount; i++) {
-      newSlots.push({id: i});
-    }
-  }
-  slots.reset(newSlots);
+  this.rebuildSlots(slots, layout);
   var commands = [];
   commands.push(this.conferenceCommand(conference, 'vid-res-id all clear'));
   if (layout) {
@@ -175,11 +201,33 @@ FreeswitchLayoutManager.prototype.reservationChanged = function(user, reservatio
   this.manageSlot(user, reservationId);
 }
 
+FreeswitchLayoutManager.prototype.memberIdChanged = function(user, memberId) {
+  var prevMemberId = user.previous('memberId');
+  if (prevMemberId) {
+    var conference = this.getConference(user.conferenceId);
+    if (conference) {
+      var command = this.conferenceCommand(conference, format('kick %s', prevMemberId));
+      this.util.runFreeswitchCommand(command, null, this.FS);
+    }
+  }
+  this.manageSlot(user, user.get('reservationId'));
+}
+
+FreeswitchLayoutManager.prototype.reSlotExistingUser = function(conference, model) {
+  var slots = conference.get('slots');
+  var existingSlot = slots.findWhere({callerId: model.id});
+  if (existingSlot) {
+    user.set('memberId', model.memberId);
+    return true;
+  }
+  return false;
+}
+
 FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) {
   silent = _.isUndefined(silent) ? false : silent;
-  var slot = slots.findWhere({memberId: null});
+  var slot = slots.findWhere({callerId: null});
   if (slot) {
-    slot.set('memberId', user.id, {silent: silent});
+    slot.set('callerId', user.id, {silent: silent});
     user.set('reservationId', slot.id, {silent: silent});
     return true;
   }
@@ -191,7 +239,7 @@ FreeswitchLayoutManager.prototype.userJoined = function(user) {
   if (conference) {
     var slots = conference.get('slots');
     if (!this.findEmptySlot(slots, user)) {
-      this.newLayout(conference);
+      this.upgradeLayout(conference, user);
     }
   }
 }
@@ -213,7 +261,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
         var reservationId = user.get('reservationId');
         if (reservationId) {
           var slot = slots.get(reservationId);
-          slot && slot.set('memberId', null);
+          slot && slot.set('callerId', null);
         }
       }
     }
@@ -228,18 +276,22 @@ FreeswitchLayoutManager.prototype.getConferenceStatus = function(conferenceId, c
   this.util.runFreeswitchCommand(command, statusCallback, this.FS);
 }
 
-FreeswitchLayoutManager.prototype.getConferenceIds = function(conferenceId, callback) {
-  var ids = [];
+FreeswitchLayoutManager.prototype.getConferenceMemberData = function(conferenceId, callback) {
+  var models = [];
   var statusCallback = function(err, result) {
     if (!err) {
       var lines = result.split("\n");
       for (var num in lines) {
         var fields = lines[num].split(";");
-        var memberId = fields[0];
-        memberId && ids.push(memberId);
+        var model = {
+          id: fields[4],
+          memberId: fields[0],
+          callerName: fields[3],
+        };
+        model.id && models.push(model);
       }
     }
-    callback(ids);
+    callback(models);
   }
   this.getConferenceStatus(conferenceId, statusCallback);
 }
@@ -248,6 +300,8 @@ FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
   var action = msg.body['Action'];
   var conferenceId = msg.body['Conference-Name'];
   var memberId = msg.body['Member-ID'];
+  var callerName = msg.body['Caller-Caller-ID-Name'];
+  var callerId = msg.body['Caller-Caller-ID-Number'];
   this.logger.debug(format("Got action %s on conference %s", action, conferenceId));
   var conference;
   switch (action) {
@@ -267,15 +321,22 @@ FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
     var users = conference.get('users');
     switch (action) {
       case 'add-member':
-        this.logger.debug(format("Member %s joined conference %s", memberId, conferenceId));
-        users.add({id: memberId});
+        this.logger.debug(format("Member %s, user %s (%s) joined conference %s", memberId, callerName, callerId, conferenceId));
+        var model = {
+          id: callerId,
+          memberId: memberId,
+          callerName: callerName,
+        };
+        if (!this.reSlotExistingUser(conference, model)) {
+          users.add(model);
+        }
         break;
       case 'del-member':
-        this.logger.debug(format("Member %s left conference %s", memberId, conferenceId));
-        users.remove(memberId);
+        this.logger.debug(format("Member %s, user %s (%s) left conference %s", memberId, callerName, callerId, conferenceId));
+        users.remove(callerId);
         break;
       case 'floor-change':
-        this.logger.debug(format("Member %s took floor in conference %s", memberId, conferenceId));
+        this.logger.debug(format("Member %s, user %s (%s) took floor in conference %s", memberId, callerName, callerId, conferenceId));
         break;
     }
   }
@@ -302,14 +363,14 @@ FreeswitchLayoutManager.prototype.monitorConference = function(conferenceId, act
     conference.set('activeLayoutGroup', activeLayoutGroup);
   }
   if (populateUsers) {
-    var callback = function(ids) {
+    var callback = function(models) {
       var users = conference.get('users');
-      for (var id in ids) {
-        users.add({id: ids[id]}, {silent: true});
+      for (var key in models) {
+        users.add(models[key], {silent: true});
       }
       populated();
     };
-    this.getConferenceIds(conference.id, callback.bind(this));
+    this.getConferenceMemberData(conference.id, callback.bind(this));
   }
   else {
     populated();

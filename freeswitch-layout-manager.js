@@ -102,11 +102,8 @@ FreeswitchLayoutManager.prototype.conferenceCommand = function(conference, comma
   return format('conference %s %s', conference.id, command);
 }
 
-FreeswitchLayoutManager.prototype.resIdCommand = function(conference, user, reservationId, clear) {
+FreeswitchLayoutManager.prototype.resIdCommand = function(conference, user, reservationId) {
   var commandString = 'vid-res-id %s %s';
-  if (clear) {
-    commandString += ' clear';
-  }
   var command = this.conferenceCommand(conference, format(commandString, user.get('memberId'), reservationId));
   return command;
 }
@@ -203,8 +200,8 @@ FreeswitchLayoutManager.prototype.manageUserReservationId = function(user) {
   if (conference) {
     var resId = user.get('reservationId');
     var prevResId = user.previous('reservationID');
-    var clear = prevResId && !resId;
-    var command = this.resIdCommand(conference, user, resId, clear);
+    var resIdValue = (prevResId && !resId) ? 'clear' : resId;
+    var command = this.resIdCommand(conference, user, resIdValue);
     this.util.runFreeswitchCommand(command, null, this.FS);
   }
 }
@@ -298,14 +295,13 @@ FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
   var conference = this.getConference(user.conferenceId);
   if (conference) {
     var commands = [];
+    commands.push(this.resIdCommand(conference, user, 'clear'));
     if (floor) {
       this.logger.debug(format("giving floor to user %s", user.get('callerName')));
-      commands.push(this.resIdCommand(conference, user, user.get('reservationId'), true));
       commands.push(this.resIdCommand(conference, user, 'floor'));
     }
     else {
       this.logger.debug(format("removing user %s from floor", user.get('callerName')));
-      commands.push(this.resIdCommand(conference, user, 'floor', true));
       commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
     }
     this.util.runFreeswitchCommandSeries(commands, null, this.FS);
@@ -586,14 +582,9 @@ FreeswitchLayoutManager.prototype.parseConferenceLayout = function(layoutName) {
     }
     for (var key in layout.image) {
       var image = layout.image[key].$;
-      if (image['floor-only'] == 'true') {
-        if (image.reservation_id != 'floor') {
-          this.logger.warn("conference layout %s image has floor with incorrect reservation_id, must be 'floor', skipping layout", layoutName);
-          return;
-        }
-        else {
-          layoutData.hasFloor = true;
-        }
+      if (image.reservation_id == 'floor') {
+        this.logger.info("found floor slot for conference layout %s", layoutName);
+        layoutData.hasFloor = true;
       }
       else if (image.reservation_id) {
         var id = parseFloat(image.reservation_id);

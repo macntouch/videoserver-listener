@@ -348,14 +348,24 @@ FreeswitchLayoutManager.prototype.manageTalkingTimer = function(conference, user
 }
 
 FreeswitchLayoutManager.prototype.setUserTalking = function(conference, callerId, talking, floorCandidate) {
+  this.logger.debug("hit here #1");
   var users = conference.get('users');
   var user = users.get(callerId);
   if (user) {
+    this.logger.debug("hit here #2");
     var attrs = {
       talking: talking,
       floorCandidate: floorCandidate,
     };
     user.set(attrs);
+    var dump = user.toJSON();
+    if (dump.talkingTimer) {
+      dump.talkingTimer = true;
+    }
+    else {
+      dump.talkingTimer = false;
+    }
+    this.logger.debug("hit here #3", dump);
     this.manageTalkingTimer(conference, user);
   }
 }

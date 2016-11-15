@@ -297,17 +297,18 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
 FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
   var conference = this.getConference(user.conferenceId);
   if (conference) {
-    var resId;
+    var commands = [];
     if (floor) {
       this.logger.debug(format("giving floor to user %s", user.get('callerName')));
-      resId = 'floor';
+      commands.push(this.resIdCommand(conference, user, user.get('reservationId'), true));
+      commands.push(this.resIdCommand(conference, user, 'floor'));
     }
     else {
       this.logger.debug(format("removing user %s from floor", user.get('callerName')));
-      resId = user.get('reservationId');
+      commands.push(this.resIdCommand(conference, user, 'floor', true));
+      commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
     }
-    var command = this.resIdCommand(conference, user, resId);
-    this.util.runFreeswitchCommand(command, null, this.FS);
+    this.util.runFreeswitchCommandSeries(commands, null, this.FS);
   }
 }
 
@@ -352,6 +353,7 @@ FreeswitchLayoutManager.prototype.checkFloor = function(conference, user) {
     user.set('talkingTimer', null);
     var floorCandidate = user.get('floorCandidate');
     var talking = user.get('talking');
+    this.logger.debug(format("floor check for user %s in conference %s: floorCandidate %s, talking %s", user.get('callerName'), conference.id, floorCandidate, talking));
     if (floorCandidate && talking) {
       this.userToFloor(conference, user);
     }
@@ -364,10 +366,15 @@ FreeswitchLayoutManager.prototype.userToFloor = function(conference, user) {
   if (activeLayout) {
     var hasFloor = activeLayout.get('hasFloor');
     if (hasFloor) {
-      this.logger.debug(format("moving user %s to floor in conference %s", user.get('callerName'), conference.id));
-      var users = conference.get('users');
-      users.invoke('set', 'floor', false);
-      user.set('floor', true);
+      if (user.get('floor')) {
+        this.logger.debug(format("user %s already has floor in conference %s", user.get('callerName'), conference.id));
+      }
+      else {
+        this.logger.debug(format("moving user %s to floor in conference %s", user.get('callerName'), conference.id));
+        var users = conference.get('users');
+        users.invoke('set', 'floor', false);
+        user.set('floor', true);
+      }
     }
   }
 }
@@ -456,6 +463,10 @@ FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
       case 'stop-talking':
         this.logger.debug(format("Member %s, user %s (%s) stopped talking in conference %s", memberId, callerName, callerId, conferenceId));
         this.setUserTalking(conference, callerId, false, floorCandidate);
+        break;
+      case 'floor-change':
+        this.logger.debug(format("Member %s, user %s (%s) got audio floor in conference %s", memberId, callerName, callerId, conferenceId));
+        this.setUserTalking(conference, callerId, talking, floorCandidate);
         break;
     }
   }

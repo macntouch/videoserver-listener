@@ -294,17 +294,17 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
 FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
   var conference = this.getConference(user.conferenceId);
   if (conference) {
-    var commands = [];
-    commands.push(this.resIdCommand(conference, user, 'clear'));
+    var resId;
     if (floor) {
       this.logger.debug(format("giving floor to user %s", user.get('callerName')));
-      commands.push(this.resIdCommand(conference, user, 'floor'));
+      resId = 'floor';
     }
     else {
       this.logger.debug(format("removing user %s from floor", user.get('callerName')));
-      commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
+      resId = user.get('reservationId');
     }
-    this.util.runFreeswitchCommandSeries(commands, null, this.FS);
+    var command = this.resIdCommand(conference, user, resId);
+    this.util.runFreeswitchCommand(command, null, this.FS);
   }
 }
 

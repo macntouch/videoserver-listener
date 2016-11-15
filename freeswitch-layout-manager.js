@@ -164,7 +164,12 @@ FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
     var commands = [];
     commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
     commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
-    this.util.runFreeswitchCommandSeries(commands, null, this.FS);
+    var floorCheck = function() {
+      if (user.get('floorCandidate')) {
+        this.userToFloor(conference, user);
+      }
+    }
+    this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
   }
 }
 
@@ -192,7 +197,13 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
     }, this);
     this.logger.debug(format("set layout %s for %d users", layout.id, users.length));
   }
-  this.util.runFreeswitchCommandSeries(commands, null, this.FS);
+  var floorCheck = function() {
+    var floorUser = users.findWhere({floor: true});
+    if (floorUser) {
+      this.floorChanged(floorUser, true);
+    }
+  }
+  this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
 }
 
 FreeswitchLayoutManager.prototype.manageUserReservationId = function(user) {
@@ -294,17 +305,23 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
 FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
   var conference = this.getConference(user.conferenceId);
   if (conference) {
-    var resId;
-    if (floor) {
-      this.logger.debug(format("giving floor to user %s", user.get('callerName')));
-      resId = 'floor';
+    var activeLayout = conference.get('activeLayout');
+    if (activeLayout) {
+      var hasFloor = activeLayout.get('hasFloor');
+      if (hasFloor) {
+        var resId;
+        if (floor) {
+          this.logger.debug(format("giving floor to user %s", user.get('callerName')));
+          resId = 'floor';
+        }
+        else {
+          this.logger.debug(format("removing user %s from floor", user.get('callerName')));
+          resId = user.get('reservationId');
+        }
+        var command = this.resIdCommand(conference, user, resId);
+        this.util.runFreeswitchCommand(command, null, this.FS);
+      }
     }
-    else {
-      this.logger.debug(format("removing user %s from floor", user.get('callerName')));
-      resId = user.get('reservationId');
-    }
-    var command = this.resIdCommand(conference, user, resId);
-    this.util.runFreeswitchCommand(command, null, this.FS);
   }
 }
 
@@ -358,20 +375,14 @@ FreeswitchLayoutManager.prototype.checkFloor = function(conference, user) {
 
 FreeswitchLayoutManager.prototype.userToFloor = function(conference, user) {
   this.logger.debug(format("checking to move user %s to floor in conference %s", user.get('callerName'), conference.id));
-  var activeLayout = conference.get('activeLayout');
-  if (activeLayout) {
-    var hasFloor = activeLayout.get('hasFloor');
-    if (hasFloor) {
-      if (user.get('floor')) {
-        this.logger.debug(format("user %s already has floor in conference %s", user.get('callerName'), conference.id));
-      }
-      else {
-        this.logger.debug(format("moving user %s to floor in conference %s", user.get('callerName'), conference.id));
-        var users = conference.get('users');
-        users.invoke('set', 'floor', false);
-        user.set('floor', true);
-      }
-    }
+  if (user.get('floor')) {
+    this.logger.debug(format("user %s already has floor in conference %s", user.get('callerName'), conference.id));
+  }
+  else {
+    this.logger.debug(format("moving user %s to floor in conference %s", user.get('callerName'), conference.id));
+    var users = conference.get('users');
+    users.invoke('set', 'floor', false);
+    user.set('floor', true);
   }
 }
 
@@ -390,18 +401,20 @@ FreeswitchLayoutManager.prototype.getConferenceMemberData = function(conferenceI
     if (!err) {
       var lines = result.split("\n");
       for (var num in lines) {
-        var fields = lines[num].split(";");
-        var attrs = fields[5].split("|");
-        var floorCandidate = attrs.indexOf('floor') !== -1;
-        var talking = attrs.indexOf('talking') !== -1;
-        var model = {
-          id: fields[4],
-          memberId: fields[0],
-          callerName: fields[3],
-          floorCandidate: floorCandidate,
-          talking: talking,
-        };
-        model.id && models.push(model);
+        if (!_.isEmpty(lines[num])) {
+          var fields = lines[num].split(";");
+          var attrs = fields[5].split("|");
+          var floorCandidate = attrs.indexOf('floor') !== -1;
+          var talking = attrs.indexOf('talking') !== -1;
+          var model = {
+            id: fields[4],
+            memberId: fields[0],
+            callerName: fields[3],
+            floorCandidate: floorCandidate,
+            talking: talking,
+          };
+          model.id && models.push(model);
+        }
       }
     }
     callback(models);

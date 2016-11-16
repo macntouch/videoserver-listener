@@ -247,6 +247,9 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
     this.logger.debug(format("set layout %s for %d users", layout.id, users.length));
   }
   var floorCheck = function() {
+    if (users.length == 1) {
+      users.first().set('floor', true, {silent: true});
+    }
     var floorUser = users.findWhere({floor: true});
     if (floorUser) {
       this.floorChanged(floorUser, true);
@@ -574,6 +577,8 @@ FreeswitchLayoutManager.prototype.manageConference = function(conferenceId, acti
       for (var key in models) {
         users.add(models[key], {silent: true});
       }
+      var floorUser = users.findWhere({floorCandidate: true}) || users.first();
+      floorUser && floorUser.set('floor', true, {silent: true});
       this.logger.info(format("populated conference %s with users %s", conferenceId, JSON.stringify(users.toJSON())));
       populated();
     };

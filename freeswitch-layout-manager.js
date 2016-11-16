@@ -147,6 +147,10 @@ FreeswitchLayoutManager.prototype.getConference = function(conferenceId) {
   return conference;
 }
 
+FreeswitchLayoutManager.prototype.getLayoutGroup = function(layoutGroup) {
+  return this.layoutGroups.get(layoutGroup);
+}
+
 FreeswitchLayoutManager.prototype.conferenceCommand = function(conference, command) {
   return format('conference %s %s', conference.id, command);
 }
@@ -158,18 +162,30 @@ FreeswitchLayoutManager.prototype.resIdCommand = function(conference, user, rese
 }
 
 FreeswitchLayoutManager.prototype.enableConference = function(conference, layoutGroup, callback) {
-  if (layoutGroup != conference.get('activeLayoutGroup')) {
-    if (callback) {
-      conference.managedCallback = callback;
+  var newLayoutGroup = this.getLayoutGroup(layoutGroup);
+  if (newLayoutGroup) {
+    if (newLayoutGroup != conference.get('activeLayoutGroup')) {
+      if (callback) {
+        conference.managedCallback = callback;
+      }
+      var users = conference.get('users');
+      this.pickNewFloorUser(users);
+      conference.set('activeLayoutGroup', newLayoutGroup);
     }
-    var users = conference.get('users');
-    this.pickNewFloorUser(users);
-    conference.set('activeLayoutGroup', layoutGroup);
+    else {
+      callback && callback(null);
+    }
+  }
+  else {
+    callback(format('no layoutGroup %s', layoutGroup));
   }
 }
 
 FreeswitchLayoutManager.prototype.disableConference = function(conference, callback) {
-  this.enableConference(conference, null, callback);
+  if (callback) {
+    conference.managedCallback = callback;
+  }
+  conference.set('activeLayoutGroup', null);
 }
 
 FreeswitchLayoutManager.prototype.setConferenceLayoutGroup = function(conference, activeLayoutGroup) {
@@ -282,7 +298,7 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
         this.floorChanged(floorUser, true);
       }
       if (conference.managedCallback) {
-        conference.managedCallback();
+        conference.managedCallback(null);
         conference.managedCallback = null;
       }
     }
@@ -630,7 +646,7 @@ FreeswitchLayoutManager.prototype.unmanageConference = function(conferenceId) {
 }
 
 FreeswitchLayoutManager.prototype.monitorAll = function(layoutGroup) {
-  var activeLayoutGroup = this.layoutGroups.get(layoutGroup);
+  var activeLayoutGroup = this.getLayoutGroup(layoutGroup);
   if (activeLayoutGroup) {
     this.logger.info(format("setting layout group %s for auto monitor", activeLayoutGroup.id));
     this.autoMonitor = activeLayoutGroup;

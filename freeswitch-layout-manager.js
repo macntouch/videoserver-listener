@@ -81,6 +81,8 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
     defaults: {
       activeLayoutGroup: null,
       activeLayout: null,
+      managed: false,
+      managedCallback: null,
     },
     initialize: function(options) {
       this.commandQueue = [];
@@ -155,15 +157,32 @@ FreeswitchLayoutManager.prototype.resIdCommand = function(conference, user, rese
   return command;
 }
 
+FreeswitchLayoutManager.prototype.enableConference = function(conference, layoutGroup, callback) {
+  if (layoutGroup != conference.get('activeLayoutGroup')) {
+    if (callback) {
+      conference.managedCallback = callback;
+    }
+    var users = conference.get('users');
+    this.pickNewFloorUser(users);
+    conference.set('activeLayoutGroup', layoutGroup);
+  }
+}
+
+FreeswitchLayoutManager.prototype.disableConference = function(conference, callback) {
+  this.enableConference(conference, null, callback);
+}
+
 FreeswitchLayoutManager.prototype.setConferenceLayoutGroup = function(conference, activeLayoutGroup) {
   if (activeLayoutGroup) {
-    this.logger.info(format("activating layout group %s on conference %s", activeLayoutGroup.id, conference.id));
+    this.logger.info(format("enabling conference %s, layout group %s", conference.id, activeLayoutGroup.id));
+    conference.managed = true;
     this.newLayout(conference);
   }
   else {
     var previousGroup = conference.previous('activeLayoutGroup');
-    this.logger.info(format("removing layout group %s from conference %s", previousGroup.id, conference.id));
+    this.logger.info(format("disabling conference %s, layout group %s", conference.id, previousGroup.id));
     conference.set('activeLayout', null);
+    conference.managed = false;
   }
 }
 
@@ -196,68 +215,81 @@ FreeswitchLayoutManager.prototype.rebuildSlots = function(slots, layout) {
 }
 
 FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
-  var layout = this.findLayoutByUserCount(conference);
-  if (layout) {
+  if (conference.managed) {
+    var layout = this.findLayoutByUserCount(conference);
+    if (layout) {
+      var users = conference.get('users');
+      var slots = conference.get('slots');
+      this.rebuildSlots(slots, layout);
+      slots.each(function(slot) {
+        var reslotUser = users.findWhere({reservationId: slot.id});
+        reslotUser && slot.set('callerId', reslotUser.id, {silent: true});
+      }, this);
+      this.findEmptySlot(slots, user, true);
+      conference.set('activeLayout', layout, {silent: true});
+      this.logger.debug(format("upgraded to layout %s for %d users", layout.id, users.length));
+      var commands = [];
+      commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
+      commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
+      var floorCheck = function() {
+        if (user.get('floorCandidate')) {
+          this.userToFloor(conference, user);
+        }
+      }
+      this.queueCommands(conference, commands, floorCheck.bind(this));
+      // TODO: Use this if async issues get fixed.
+      //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
+    }
+  }
+}
+
+FreeswitchLayoutManager.prototype.newLayout = function(conference) {
+  if (conference.managed) {
+    var layout = this.findLayoutByUserCount(conference);
+    layout && conference.set('activeLayout', layout);
+  }
+}
+
+FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
+  if (conference.managed) {
     var users = conference.get('users');
     var slots = conference.get('slots');
+    // Wasteful to send individual commands with this many operations, so lock
+    // regular changes.
+    users.each(function(user) {
+      user.set('reservationId', null, {silent: true});
+    });
     this.rebuildSlots(slots, layout);
-    slots.each(function(slot) {
-      var reslotUser = users.findWhere({reservationId: slot.id});
-      reslotUser && slot.set('callerId', reslotUser.id, {silent: true});
-    }, this);
-    this.findEmptySlot(slots, user, true);
-    conference.set('activeLayout', layout, {silent: true});
-    this.logger.debug(format("upgraded to layout %s for %d users", layout.id, users.length));
     var commands = [];
-    commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
-    commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
+    commands.push(this.conferenceCommand(conference, 'vid-res-id all clear'));
+    if (layout) {
+      commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
+      users.each(function(user) {
+        this.findEmptySlot(slots, user, true);
+        commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
+      }, this);
+      this.logger.debug(format("set layout %s for %d users", layout.id, users.length));
+    }
+    else {
+      this.clearAllTalkingTimers(conference);
+    }
     var floorCheck = function() {
-      if (user.get('floorCandidate')) {
-        this.userToFloor(conference, user);
+      if (users.length == 1) {
+        users.first().set('floor', true, {silent: true});
+      }
+      var floorUser = users.findWhere({floor: true});
+      if (floorUser) {
+        this.floorChanged(floorUser, true);
+      }
+      if (conference.managedCallback) {
+        conference.managedCallback();
+        conference.managedCallback = null;
       }
     }
     this.queueCommands(conference, commands, floorCheck.bind(this));
     // TODO: Use this if async issues get fixed.
     //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
   }
-}
-
-FreeswitchLayoutManager.prototype.newLayout = function(conference) {
-  var layout = this.findLayoutByUserCount(conference);
-  layout && conference.set('activeLayout', layout);
-}
-
-FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
-  var users = conference.get('users');
-  var slots = conference.get('slots');
-  // Wasteful to send individual commands with this many operations, so lock
-  // regular changes.
-  users.each(function(user) {
-    user.set('reservationId', null, {silent: true});
-  });
-  this.rebuildSlots(slots, layout);
-  var commands = [];
-  commands.push(this.conferenceCommand(conference, 'vid-res-id all clear'));
-  if (layout) {
-    commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
-    users.each(function(user) {
-      this.findEmptySlot(slots, user, true);
-      commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
-    }, this);
-    this.logger.debug(format("set layout %s for %d users", layout.id, users.length));
-  }
-  var floorCheck = function() {
-    if (users.length == 1) {
-      users.first().set('floor', true, {silent: true});
-    }
-    var floorUser = users.findWhere({floor: true});
-    if (floorUser) {
-      this.floorChanged(floorUser, true);
-    }
-  }
-  this.queueCommands(conference, commands, floorCheck.bind(this));
-  // TODO: Use this if async issues get fixed.
-  //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
 }
 
 FreeswitchLayoutManager.prototype.manageUserReservationId = function(user) {
@@ -322,7 +354,7 @@ FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) 
 FreeswitchLayoutManager.prototype.userJoined = function(user) {
   this.logger.debug(format("user %s joined", user.get('callerName')));
   var conference = this.getConference(user.conferenceId);
-  if (conference) {
+  if (conference && conference.managed) {
     var slots = conference.get('slots');
     if (!this.findEmptySlot(slots, user)) {
       this.upgradeLayout(conference, user);
@@ -334,7 +366,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
   this.logger.debug(format("user %s left", user.get('callerName')));
   this.clearTalkingTimer(user);
   var conference = this.getConference(user.conferenceId);
-  if (conference) {
+  if (conference && conference.managed) {
     var users = conference.get('users');
     var slots = conference.get('slots');
     var layout = conference.get('activeLayout');
@@ -362,7 +394,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
 
 FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
   var conference = this.getConference(user.conferenceId);
-  if (conference) {
+  if (conference && conference.managed) {
     var activeLayout = conference.get('activeLayout');
     if (activeLayout) {
       var hasFloor = activeLayout.get('hasFloor');
@@ -386,6 +418,13 @@ FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
 }
 
 
+FreeswitchLayoutManager.prototype.clearAllTalkingTimers = function(conference) {
+  var users = conference.get('users');
+  users.each(function(user) {
+    this.clearTalkingTimer(user);
+  }, this);
+}
+
 FreeswitchLayoutManager.prototype.clearTalkingTimer = function(user) {
   var timer = user.get('talkingTimer');
   if (timer) {
@@ -395,44 +434,36 @@ FreeswitchLayoutManager.prototype.clearTalkingTimer = function(user) {
 }
 
 FreeswitchLayoutManager.prototype.manageTalkingTimer = function(conference, user) {
-  var talking = user.get('talking');
-  var previousTalking = user.previous('talking');
-  if (!previousTalking && talking) {
-    var timer = setTimeout(this.checkFloor.bind(this, conference, user), this.config.conference_layout_floor_timer);
-    user.set('talkingTimer', timer);
-    this.logger.debug(format("set floor timer for user %s in conference %s", user.get('callerName'), conference.id));
-  }
-  else if (previousTalking && !talking) {
-    this.clearTalkingTimer(user);
+  if (conference.managed) {
+    var talking = user.get('talking');
+    var previousTalking = user.previous('talking');
+    if (!previousTalking && talking) {
+      var timer = setTimeout(this.checkFloor.bind(this, conference, user), this.config.conference_layout_floor_timer);
+      user.set('talkingTimer', timer);
+      this.logger.debug(format("set floor timer for user %s in conference %s", user.get('callerName'), conference.id));
+    }
+    else if (previousTalking && !talking) {
+      this.clearTalkingTimer(user);
+    }
   }
 }
 
 FreeswitchLayoutManager.prototype.setUserTalking = function(conference, callerId, talking, floorCandidate) {
-  this.logger.debug("hit here #1");
   var users = conference.get('users');
   var user = users.get(callerId);
   if (user) {
-    this.logger.debug("hit here #2");
     var attrs = {
       talking: talking,
       floorCandidate: floorCandidate,
     };
     user.set(attrs);
-    var dump = user.toJSON();
-    if (dump.talkingTimer) {
-      dump.talkingTimer = true;
-    }
-    else {
-      dump.talkingTimer = false;
-    }
-    this.logger.debug("hit here #3", dump);
     this.manageTalkingTimer(conference, user);
   }
 }
 
 FreeswitchLayoutManager.prototype.checkFloor = function(conference, user) {
   this.logger.debug(format("floor timer expired for user %s in conference %s", user.get('callerName'), conference.id));
-  if (conference && user) {
+  if (conference && conference.managed && user) {
     user.set('talkingTimer', null);
     var floorCandidate = user.get('floorCandidate');
     var talking = user.get('talking');
@@ -454,6 +485,11 @@ FreeswitchLayoutManager.prototype.userToFloor = function(conference, user) {
     users.invoke('set', 'floor', false);
     user.set('floor', true);
   }
+}
+
+FreeswitchLayoutManager.prototype.pickNewFloorUser = function(users) {
+  var floorUser = users.findWhere({floorCandidate: true}) || users.first();
+  floorUser && floorUser.set('floor', true, {silent: true});
 }
 
 FreeswitchLayoutManager.prototype.getConferenceStatus = function(conferenceId, callback) {
@@ -577,8 +613,7 @@ FreeswitchLayoutManager.prototype.manageConference = function(conferenceId, acti
       for (var key in models) {
         users.add(models[key], {silent: true});
       }
-      var floorUser = users.findWhere({floorCandidate: true}) || users.first();
-      floorUser && floorUser.set('floor', true, {silent: true});
+      this.pickNewFloorUser(users);
       this.logger.info(format("populated conference %s with users %s", conferenceId, JSON.stringify(users.toJSON())));
       populated();
     };

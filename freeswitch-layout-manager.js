@@ -55,6 +55,12 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
     model: userModel,
     initialize: function(models, options) {
       this.conferenceId = options.conferenceId;
+      this.on('remove', this.modelRemoved);
+    },
+    modelRemoved: function(model) {
+      model.off('change:reservationId');
+      model.off('change:memberId');
+      model.off('change:floor');
     },
   });
   var reservationModel = Backbone.Model.extend({
@@ -91,6 +97,13 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
   });
   this.conferences = new (Backbone.Collection.extend({
     model: conferenceModel,
+    initialize: function(models, options) {
+      this.on('remove', this.modelRemoved);
+    },
+    modelRemoved: function(model) {
+      model.off('change:activeLayoutGroup');
+      model.off('change:activeLayout');
+    },
   }))();
 }
 

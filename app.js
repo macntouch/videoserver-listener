@@ -90,7 +90,7 @@ app.get('/', function (req, res) {
 });
 
 // FreeSWITCH routes.
-var buildFreeswitchRoutes = function(FS) {
+var buildFreeswitchRoutes = function(FS, fsLayoutManager) {
   app.post('/commands', function (req, res) {
     var commands = req.body.commands;
     if (_.isArray(commands)) {
@@ -130,14 +130,75 @@ var buildFreeswitchRoutes = function(FS) {
       return errorResponse(res, 400, "Bad request, commands array required.");
     }
   });
+  app.post('/conference/:conferenceId/control', function (req, res) {
+    var action = req.body.action;
+    var params = req.body && JSON.stringify(req.body);
+    logger.debug(format('Got control action %s, params %s', action, params));
+    var validActions = [
+      'enable-managed',
+      'disable-managed',
+    ];
+    var conference;
+    if (validActions.indexOf(action) === -1) {
+      return errorResponse(res, 400, format("Bad request, action required, must be one of %s.", validActions));
+    }
+    else if (!(conference = fsLayoutManager.getConference(req.params.conferenceId))) {
+      return errorResponse(res, 400, format("Bad request, conference %s not found.", req.params.conferenceId));
+    }
+    else {
+      switch(action) {
+        case 'enable-managed':
+          var layoutGroup = req.body.group;
+          if (_.isEmpty(layoutGroup)) {
+            return errorResponse(res, 400, "Bad request, group required.");
+          }
+          else if (!fsLayoutManager.getLayoutGroup(layoutGroup)) {
+            return errorResponse(res, 400, format("Bad request, group %s not found.", layoutGroup));
+          }
+          else {
+            var callback = function(err) {
+              if (err) {
+                return errorResponse(res, 400, format("Error enabling conference: %s.", err));
+              }
+              else {
+                logger.debug(format('Enabled conference %s, layoutGroup %s', conference.id, layoutGroup));
+                return successResponse(res, 'enabled');
+              }
+            }
+            fsLayoutManager.enableConference(conference, layoutGroup, callback);
+          }
+          break;
+        case 'disable-managed':
+          var layout = req.body.layout;
+          if (_.isEmpty(layout)) {
+            return errorResponse(res, 400, "Bad request, layout required.");
+          }
+          else {
+            var callback = function(err) {
+              if (err) {
+                return errorResponse(res, 400, format("Error disabling conference: %s.", err));
+              }
+              else {
+                logger.debug(format('Disabled conference %s, switching to layout %s', conference.id, layout));
+                var command = format('conference %s vid-layout %s', conference.id, layout);
+                fsUtil.runFreeswitchCommand(command, null, FS);
+                return successResponse(res, 'disabled');
+              }
+            }
+            fsLayoutManager.disableConference(conference, callback);
+          }
+          break;
+      }
+    }
+  });
 }
 
 var connectCallback = function(FS) {
-  buildFreeswitchRoutes(FS);
   var layoutInitCallback = function() {
     fsLayoutManager.monitorAll('circleanywhere');
   }
   var fsLayoutManager = new freeswitchLayoutManager(FS, config, layoutInitCallback, logger);
+  buildFreeswitchRoutes(FS, fsLayoutManager);
 }
 fsUtil.connect(config, connectCallback);
 

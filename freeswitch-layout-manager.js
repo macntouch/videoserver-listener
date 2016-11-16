@@ -503,12 +503,12 @@ FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
     case 'conference-create':
       this.logger.debug(format("conference %s created", conferenceId));
       if (this.autoMonitor) {
-        this.monitorConference(conferenceId, this.autoMonitor);
+        this.manageConference(conferenceId, this.autoMonitor);
       }
       break;
     case 'conference-destroy':
       this.logger.debug(format("conference %s destroyed", conferenceId));
-      this.unmonitorConference(conferenceId);
+      this.unmanageConference(conferenceId);
       break;
   }
   conference = conference ? conference : this.getConference(conferenceId);
@@ -559,7 +559,7 @@ FreeswitchLayoutManager.prototype.conferenceAddEventListener = function(callback
     }.bind(this));
 };
 
-FreeswitchLayoutManager.prototype.monitorConference = function(conferenceId, activeLayoutGroup, populateUsers) {
+FreeswitchLayoutManager.prototype.manageConference = function(conferenceId, activeLayoutGroup, populateUsers) {
   var conference = this.getConference(conferenceId);
   if (!conference) {
     conference = this.conferences.add({id: conferenceId});
@@ -584,7 +584,7 @@ FreeswitchLayoutManager.prototype.monitorConference = function(conferenceId, act
   }
 }
 
-FreeswitchLayoutManager.prototype.unmonitorConference = function(conferenceId) {
+FreeswitchLayoutManager.prototype.unmanageConference = function(conferenceId) {
   this.logger.info(format("stopping monitoring for conference %s", conferenceId));
   this.conferences.remove(conferenceId);
 }
@@ -601,7 +601,7 @@ FreeswitchLayoutManager.prototype.monitorAll = function(layoutGroup) {
           var matches = lines[num].match(/^Conference ([0-9a-zA-Z_-]+)/);
           if (matches && matches[1]) {
             this.logger.info(format("Found conference: %s", matches[1]));
-            this.monitorConference(matches[1], this.autoMonitor, true);
+            this.manageConference(matches[1], this.autoMonitor, true);
           }
         }
       }
@@ -618,7 +618,7 @@ FreeswitchLayoutManager.prototype.monitorAll = function(layoutGroup) {
 FreeswitchLayoutManager.prototype.unmonitorAll = function() {
   this.logger.info("stopping monitoring on all conferences");
   this.conferences.each(function(conference) {
-    this.unmonitorConference(conference.id);
+    this.unmanageConference(conference.id);
   }, this);
   this.autoMonitor = null;
 }

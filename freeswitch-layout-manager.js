@@ -77,6 +77,8 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
       activeLayout: null,
     },
     initialize: function(options) {
+      this.commandQueue = [];
+      this.queueRunning = false;
       var users = new userCollection(null, {conferenceId: this.id}, this);
       var slots = new reservationCollection(null, {conferenceId: this.id}, this);
       this.listenTo(users, 'add', self.userJoined.bind(self));
@@ -92,6 +94,38 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
   }))();
 }
 
+FreeswitchLayoutManager.prototype.queueCommands = function(conference, commands, callback) {
+  var runCommands = function(conference) {
+    this.logger.debug(format("running command set '%s'", commands));
+    var commandsCallback = function() {
+      this.logger.debug(format("command set complete: '%s'", commands));
+      callback && callback();
+      conference.queueRunning = false;
+      this.runQueue(conference);
+    }.bind(this);
+    if (_.isArray(commands)) {
+      this.logger.debug(format("running command series"));
+      this.util.runFreeswitchCommandSeries(commands, commandsCallback, this.FS);
+    }
+    else {
+      this.logger.debug(format("running single command"));
+      this.util.runFreeswitchCommand(commands, commandsCallback, this.FS);
+    }
+  }
+  conference.commandQueue.push(runCommands.bind(this, conference));
+  this.logger.debug(format("queued command set '%s', queue size: %d", commands, conference.commandQueue.length));
+  this.runQueue(conference);
+}
+
+FreeswitchLayoutManager.prototype.runQueue = function(conference) {
+  this.logger.debug(format("checking queue, queue size: %d", conference.commandQueue.length));
+  if (!conference.queueRunning && !_.isEmpty(conference.commandQueue)) {
+    conference.queueRunning = true;
+    var func = conference.commandQueue.shift();
+    this.logger.debug(format("de-queued command set, queue size: %d", conference.commandQueue.length));
+    func();
+  }
+}
 
 FreeswitchLayoutManager.prototype.getConference = function(conferenceId) {
   var conference = this.conferences.get(conferenceId);
@@ -169,7 +203,9 @@ FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
         this.userToFloor(conference, user);
       }
     }
-    this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
+    this.queueCommands(conference, commands, floorCheck.bind(this));
+    // TODO: Use this if async issues get fixed.
+    //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
   }
 }
 
@@ -203,7 +239,9 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
       this.floorChanged(floorUser, true);
     }
   }
-  this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
+  this.queueCommands(conference, commands, floorCheck.bind(this));
+  // TODO: Use this if async issues get fixed.
+  //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
 }
 
 FreeswitchLayoutManager.prototype.manageUserReservationId = function(user) {
@@ -213,7 +251,9 @@ FreeswitchLayoutManager.prototype.manageUserReservationId = function(user) {
     var prevResId = user.previous('reservationID');
     var resIdValue = (prevResId && !resId) ? 'clear' : resId;
     var command = this.resIdCommand(conference, user, resIdValue);
-    this.util.runFreeswitchCommand(command, null, this.FS);
+    this.queueCommands(conference, command);
+    // TODO: Use this if async issues get fixed.
+    //this.util.runFreeswitchCommand(command, null, this.FS);
   }
 }
 
@@ -228,7 +268,9 @@ FreeswitchLayoutManager.prototype.memberIdChanged = function(user, memberId) {
     var conference = this.getConference(user.conferenceId);
     if (conference) {
       var command = this.conferenceCommand(conference, format('kick %s', prevMemberId));
-      this.util.runFreeswitchCommand(command, null, this.FS);
+      this.queueCommands(conference, command);
+      // TODO: Use this if async issues get fixed.
+      //this.util.runFreeswitchCommand(command, null, this.FS);
     }
   }
   this.manageUserReservationId(user);
@@ -319,7 +361,9 @@ FreeswitchLayoutManager.prototype.floorChanged = function(user, floor) {
           resId = user.get('reservationId');
         }
         var command = this.resIdCommand(conference, user, resId);
-        this.util.runFreeswitchCommand(command, null, this.FS);
+        this.queueCommands(conference, command);
+        // TODO: Use this if async issues get fixed.
+        //this.util.runFreeswitchCommand(command, null, this.FS);
       }
     }
   }

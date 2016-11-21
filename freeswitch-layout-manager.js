@@ -47,7 +47,6 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
     initialize: function(options) {
       this.conferenceId = this.collection.conferenceId;
       this.on('change:reservationId', self.reservationChanged, self);
-      this.on('change:memberId', self.memberIdChanged, self);
       this.on('change:floor', self.floorChanged, self);
     },
   });
@@ -59,7 +58,6 @@ FreeswitchLayoutManager.prototype.makeCollections = function() {
     },
     modelRemoved: function(model) {
       model.off('change:reservationId');
-      model.off('change:memberId');
       model.off('change:floor');
     },
   });
@@ -169,7 +167,6 @@ FreeswitchLayoutManager.prototype.enableConference = function(conference, layout
         conference.managedCallback = callback;
       }
       var users = conference.get('users');
-      this.pickNewFloorUser(users);
       conference.set('activeLayoutGroup', newLayoutGroup);
     }
     else {
@@ -247,12 +244,7 @@ FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
       var commands = [];
       commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
       commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
-      var floorCheck = function() {
-        if (user.get('floorCandidate')) {
-          this.userToFloor(conference, user);
-        }
-      }
-      this.queueCommands(conference, commands, floorCheck.bind(this));
+      this.queueCommands(conference, commands);
       // TODO: Use this if async issues get fixed.
       //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
     }
@@ -263,6 +255,8 @@ FreeswitchLayoutManager.prototype.newLayout = function(conference) {
   if (conference.managed) {
     var layout = this.findLayoutByUserCount(conference);
     layout && conference.set('activeLayout', layout);
+    var users = conference.get('users');
+    this.pickNewFloorUser(conference, users);
   }
 }
 
@@ -289,20 +283,13 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
     else {
       this.clearAllTalkingTimers(conference);
     }
-    var floorCheck = function() {
-      if (users.length == 1) {
-        users.first().set('floor', true, {silent: true});
-      }
-      var floorUser = users.findWhere({floor: true});
-      if (floorUser) {
-        this.floorChanged(floorUser, true);
-      }
+    var layoutComplete = function() {
       if (conference.managedCallback) {
         conference.managedCallback(null);
         conference.managedCallback = null;
       }
     }
-    this.queueCommands(conference, commands, floorCheck.bind(this));
+    this.queueCommands(conference, commands, layoutComplete.bind(this));
     // TODO: Use this if async issues get fixed.
     //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
   }
@@ -325,34 +312,34 @@ FreeswitchLayoutManager.prototype.reservationChanged = function(user, reservatio
   this.manageUserReservationId(user);
 }
 
-FreeswitchLayoutManager.prototype.memberIdChanged = function(user, memberId) {
-  var prevMemberId = user.previous('memberId');
-  if (prevMemberId) {
-    this.logger.info(format("user %s changed member id from %d to %d", user.get('callerName'), prevMemberId, memberId));
-    var conference = this.getConference(user.conferenceId);
-    if (conference) {
-      var command = this.conferenceCommand(conference, format('kick %s', prevMemberId));
-      this.queueCommands(conference, command);
-      // TODO: Use this if async issues get fixed.
-      //this.util.runFreeswitchCommand(command, null, this.FS);
-    }
-  }
-  this.manageUserReservationId(user);
-}
-
-FreeswitchLayoutManager.prototype.reSlotExistingUser = function(conference, model) {
-  var users = conference.get('users');
+FreeswitchLayoutManager.prototype.checkExistingUser = function(conference, users, model) {
   var slots = conference.get('slots');
+  var addUser = function() {
+    users.add(model);
+  }
+  this.logger.debug(format("checking if user %s already exists in conference %s", model.callerName, conference.id));
   var existingSlot = slots.findWhere({callerId: model.id});
   if (existingSlot) {
     var user = users.get(model.id);
     if (user) {
-      this.logger.info(format("re-slotting existing user %s in slot %d", user.get('callerName'), existingSlot.id));
-      user.set('memberId', model.memberId);
-      return true;
+      this.logger.info(format("kicking existing user %s in slot %d", user.get('callerName'), existingSlot.id));
+      var userKicked = function() {
+        // Not my favorite solution, but the added user will get clobbered by
+        // the delete-member event from the previous kick w/o a delay.
+        setTimeout(function() {
+          addUser();
+        }, 1000);
+      }
+      var command = this.conferenceCommand(conference, format('kick %s', user.get('memberId')));
+      this.queueCommands(conference, command, userKicked);
+    }
+    else {
+      addUser();
     }
   }
-  return false;
+  else {
+    addUser();
+  }
 }
 
 FreeswitchLayoutManager.prototype.findEmptySlot = function(slots, user, silent) {
@@ -371,10 +358,12 @@ FreeswitchLayoutManager.prototype.userJoined = function(user) {
   this.logger.debug(format("user %s joined", user.get('callerName')));
   var conference = this.getConference(user.conferenceId);
   if (conference && conference.managed) {
+    var users = conference.get('users');
     var slots = conference.get('slots');
     if (!this.findEmptySlot(slots, user)) {
       this.upgradeLayout(conference, user);
     }
+    this.pickNewFloorUser(conference, users);
   }
 }
 
@@ -503,9 +492,12 @@ FreeswitchLayoutManager.prototype.userToFloor = function(conference, user) {
   }
 }
 
-FreeswitchLayoutManager.prototype.pickNewFloorUser = function(users) {
-  var floorUser = users.findWhere({floorCandidate: true}) || users.first();
-  floorUser && floorUser.set('floor', true, {silent: true});
+FreeswitchLayoutManager.prototype.pickNewFloorUser = function(conference, users) {
+  var floorUser = users.findWhere({floor: true}) || users.findWhere({floorCandidate: true}) || users.last();
+  if (floorUser) {
+    this.logger.info(format("picking new floor user %s in conference %s", floorUser.get('callerName'), conference.id));
+    floorUser.set('floor', true);
+  }
 }
 
 FreeswitchLayoutManager.prototype.getConferenceStatus = function(conferenceId, callback) {
@@ -579,9 +571,7 @@ FreeswitchLayoutManager.prototype.conferenceEvent = function(msg) {
           floorCandidate: floorCandidate,
           talking: talking,
         };
-        if (!this.reSlotExistingUser(conference, model)) {
-          users.add(model);
-        }
+        this.checkExistingUser(conference, users, model);
         break;
       case 'del-member':
         this.logger.debug(format("Member %s, user %s (%s) left conference %s", memberId, callerName, callerId, conferenceId));
@@ -620,16 +610,15 @@ FreeswitchLayoutManager.prototype.manageConference = function(conferenceId, acti
     conference = this.conferences.add({id: conferenceId});
   }
   this.logger.info(format("starting monitoring for conference %s", conferenceId));
+  var users = conference.get('users');
   var populated = function() {
     conference.set('activeLayoutGroup', activeLayoutGroup);
-  }
+  }.bind(this);
   if (populateUsers) {
     var callback = function(models) {
-      var users = conference.get('users');
       for (var key in models) {
         users.add(models[key], {silent: true});
       }
-      this.pickNewFloorUser(users);
       this.logger.info(format("populated conference %s with users %s", conferenceId, JSON.stringify(users.toJSON())));
       populated();
     };

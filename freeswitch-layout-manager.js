@@ -182,6 +182,10 @@ FreeswitchLayoutManager.prototype.disableConference = function(conference, callb
   if (callback) {
     conference.managedCallback = callback;
   }
+  var users = conference.get('users');
+  users.each(function(user) {
+    user.set('floor', false, {silent: true});
+  });
   conference.set('activeLayoutGroup', null);
 }
 
@@ -244,7 +248,10 @@ FreeswitchLayoutManager.prototype.upgradeLayout = function(conference, user) {
       var commands = [];
       commands.push(this.conferenceCommand(conference, format('vid-layout %s', layout.id)));
       commands.push(this.resIdCommand(conference, user, user.get('reservationId')));
-      this.queueCommands(conference, commands);
+      var layoutComplete = function() {
+        this.pickNewFloorUser(conference, users);
+      }
+      this.queueCommands(conference, commands, layoutComplete.bind(this));
       // TODO: Use this if async issues get fixed.
       //this.util.runFreeswitchCommandSeries(commands, floorCheck.bind(this), this.FS);
     }
@@ -255,8 +262,6 @@ FreeswitchLayoutManager.prototype.newLayout = function(conference) {
   if (conference.managed) {
     var layout = this.findLayoutByUserCount(conference);
     layout && conference.set('activeLayout', layout);
-    var users = conference.get('users');
-    this.pickNewFloorUser(conference, users);
   }
 }
 
@@ -284,6 +289,7 @@ FreeswitchLayoutManager.prototype.setLayout = function(conference, layout) {
       this.clearAllTalkingTimers(conference);
     }
     var layoutComplete = function() {
+      this.pickNewFloorUser(conference, users);
       if (conference.managedCallback) {
         conference.managedCallback(null);
         conference.managedCallback = null;
@@ -358,12 +364,10 @@ FreeswitchLayoutManager.prototype.userJoined = function(user) {
   this.logger.debug(format("user %s joined", user.get('callerName')));
   var conference = this.getConference(user.conferenceId);
   if (conference && conference.managed) {
-    var users = conference.get('users');
     var slots = conference.get('slots');
     if (!this.findEmptySlot(slots, user)) {
       this.upgradeLayout(conference, user);
     }
-    this.pickNewFloorUser(conference, users);
   }
 }
 
@@ -392,6 +396,7 @@ FreeswitchLayoutManager.prototype.userLeft = function(user) {
             slot.set('callerId', null);
           }
         }
+        this.pickNewFloorUser(conference, users);
       }
     }
   }
@@ -493,10 +498,12 @@ FreeswitchLayoutManager.prototype.userToFloor = function(conference, user) {
 }
 
 FreeswitchLayoutManager.prototype.pickNewFloorUser = function(conference, users) {
-  var floorUser = users.findWhere({floor: true}) || users.findWhere({floorCandidate: true}) || users.last();
-  if (floorUser) {
-    this.logger.info(format("picking new floor user %s in conference %s", floorUser.get('callerName'), conference.id));
-    floorUser.set('floor', true);
+  if (conference.managed) {
+    var floorUser = users.findWhere({floor: true}) || users.findWhere({floorCandidate: true}) || users.last();
+    if (floorUser) {
+      this.logger.info(format("picking new floor user %s in conference %s", floorUser.get('callerName'), conference.id));
+      floorUser.set('floor', true);
+    }
   }
 }
 

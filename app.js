@@ -274,8 +274,8 @@ app.post('/room-manager/:roomName/create-token', function(req, res) {
       return successResponse(res, result);
     }
   }
-  logger.debug('Request to create token:', req.params.roomName, req.body.username, req.body.role);
-  return RoomManager.createToken(req.params.roomName, req.body.username, req.body.role, tokenCallback);
+  logger.debug('Request to create token:', req.params.roomName, req.body.userId, req.body.role);
+  return RoomManager.createUserToken(req.params.roomName, req.body.userId, req.body.role, tokenCallback);
 });
 
 var loadRoomsCallback = function(err, result) {
@@ -286,4 +286,10 @@ var loadRoomsCallback = function(err, result) {
     logger.info(format('Successfully loaded rooms from room manager'));
   }
 }
-RoomManager.updateRooms(loadRoomsCallback);
+RoomManager.init(function(err) {
+  if (err) {
+    logger.error('Error loading room plugin:', err);
+    return;
+  }
+  RoomManager.updateRooms(loadRoomsCallback);
+});
